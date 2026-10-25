@@ -1,0 +1,8 @@
+# Name,    Type, SubType,  Offset,    Size,     Flags
+# Two 7 MB app slots on the 16 MB flash so OTA works again.
+# NOTE: changing the partition table requires ONE USB flash; OTA works after that.
+nvs,       data, nvs,      0x9000,    0x5000,
+otadata,   data, ota,      0xe000,    0x2000,
+app0,      app,  ota_0,    0x10000,   0x700000,
+app1,      app,  ota_1,    0x710000,  0x700000,
+coredump,  data, coredump, 0xE10000,  0x10000,

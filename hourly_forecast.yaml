@@ -1,0 +1,674 @@
+# === Hourly forecast page (Google Weather API) =============================
+# Refactor notes:
+#  * http_request, sun, clock script, page-rotation interval, paused/rotation
+#    now live in the main file.
+#  * Only the 6 icon text sensors remain (internal, so they are NOT exposed to
+#    Home Assistant). Time / temperature / condition labels are written directly
+#    by the lambda below, replacing 18 template text sensors.
+#  * Icon map shrunk (no duplicate *_DAY / *_NIGHT keys; see wx::icon_key).
+#  * Night detection uses the API's own isDaytime flag, so the two sun text
+#    sensors and the string parsing are gone.
+#  * API key / URL come from secrets.yaml (google_weather_url).
+
+substitutions:
+  forecast_header_text_font: nunito_32
+  hourly_header_time_font: nunito_36
+  info_font: nunito_28
+  condition_font: nunito_24
+  # "opaque" stores 2 bytes/pixel instead of 3. Icons sit on a black page, so it
+  # should look the same; switch back to alpha_channel if the edges look rough.
+  icon_transparency: opaque
+
+image:
+  - platform: file
+    defaults:
+      type: RGB565
+      transparency: ${icon_transparency}
+      resize: 48x48
+    files:
+      - id: svg_blowing_snow
+        file: "./images/google-set-4-light/blowing_snow.svg"
+      - id: svg_showers_rain
+        file: "./images/google-set-4-light/showers_rain.svg"
+      - id: svg_showers_snow
+        file: "./images/google-set-4-light/showers_snow.svg"
+      - id: svg_clear_day
+        file: "./images/google-set-4-light/clear_day.svg"
+      - id: svg_clear_night
+        file: "./images/google-set-4-light/clear_night.svg"
+      - id: svg_cloudy
+        file: "./images/google-set-4-light/cloudy.svg"
+      - id: svg_cloudy_with_rain
+        file: "./images/google-set-4-light/cloudy_with_rain.svg"
+      - id: svg_cloudy_with_snow
+        file: "./images/google-set-4-light/cloudy_with_snow.svg"
+      - id: svg_cloudy_with_sunny
+        file: "./images/google-set-4-light/cloudy_with_sunny.svg"
+      - id: svg_drizzle
+        file: "./images/google-set-4-light/drizzle.svg"
+      - id: svg_haze_fog_dust_smoke
+        file: "./images/google-set-4-light/haze_fog_dust_smoke.svg"
+      - id: svg_flurries
+        file: "./images/google-set-4-light/flurries.svg"
+      - id: svg_heavy_rain
+        file: "./images/google-set-4-light/heavy_rain.svg"
+      - id: svg_heavy_snow
+        file: "./images/google-set-4-light/heavy_snow.svg"
+      - id: svg_hurricane
+        file: "./images/google-set-4-light/hurricane.svg"
+      - id: svg_icy
+        file: "./images/google-set-4-light/icy.svg"
+      - id: svg_isolated_scattered_thunderstorms_day
+        file: "./images/google-set-4-light/isolated_scattered_thunderstorms_day.svg"
+      - id: svg_isolated_scattered_thunderstorms_night
+        file: "./images/google-set-4-light/isolated_scattered_thunderstorms_night.svg"
+      - id: svg_isolated_thunderstorms
+        file: "./images/google-set-4-light/isolated_thunderstorms.svg"
+      - id: svg_mostly_clear_day
+        file: "./images/google-set-4-light/mostly_clear_day.svg"
+      - id: svg_mostly_clear_night
+        file: "./images/google-set-4-light/mostly_clear_night.svg"
+      - id: svg_mostly_cloudy_day
+        file: "./images/google-set-4-light/mostly_cloudy_day.svg"
+      - id: svg_mostly_cloudy_night
+        file: "./images/google-set-4-light/mostly_cloudy_night.svg"
+      - id: svg_mostly_sunny
+        file: "./images/google-set-4-light/mostly_sunny.svg"
+      - id: svg_partly_cloudy
+        file: "./images/google-set-4-light/partly_cloudy.svg"
+      - id: svg_partly_cloudy_night
+        file: "./images/google-set-4-light/partly_cloudy_night.svg"
+      - id: svg_scattered_showers_day
+        file: "./images/google-set-4-light/scattered_showers_day.svg"
+      - id: svg_scattered_showers_night
+        file: "./images/google-set-4-light/scattered_showers_night.svg"
+      - id: svg_scattered_snow_showers_day
+        file: "./images/google-set-4-light/scattered_snow_showers_day.svg"
+      - id: svg_scattered_snow_showers_night
+        file: "./images/google-set-4-light/scattered_snow_showers_night.svg"
+      - id: svg_sunny
+        file: "./images/google-set-4-light/sunny.svg"
+      - id: svg_thunderstorms
+        file: "./images/google-set-4-light/thunderstorms.svg"
+      - id: svg_strong_thunderstorms
+        file: "./images/google-set-4-light/strong_thunderstorms.svg"
+      - id: svg_tornado
+        file: "./images/google-set-4-light/tornado.svg"
+      - id: svg_tropical_storm_hurricane
+        file: "./images/google-set-4-light/tropical_storm_hurricane.svg"
+      - id: svg_very_cold
+        file: "./images/google-set-4-light/very_cold.svg"
+      - id: svg_very_hot
+        file: "./images/google-set-4-light/very_hot.svg"
+      - id: svg_windy
+        file: "./images/google-set-4-light/windy.svg"
+      - id: img_unknown
+        file: "./images/png/64x64/unknown.png"
+
+# Google condition type -> icon. Night variants only exist for the types listed
+# in wx::icon_key (common/wx_colors.h); everything else uses the same icon at night.
+mapping:
+  - id: wx_icon_map
+    from: string
+    to: image
+    default_value: img_unknown
+    entries:
+      BLIZZARD: svg_blowing_snow
+      BLOWING_SNOW: svg_blowing_snow
+      CHANCE_OF_SHOWERS: svg_showers_rain
+      CHANCE_OF_SNOW_SHOWERS: svg_showers_snow
+      CLEAR: svg_clear_day
+      CLEAR_NIGHT: svg_clear_night
+      CLOUDY: svg_cloudy
+      CLOUDY_WITH_RAIN: svg_cloudy_with_rain
+      CLOUDY_WITH_SNOW: svg_cloudy_with_snow
+      CLOUDY_WITH_SUNNY: svg_cloudy_with_sunny
+      DRIZZLE: svg_drizzle
+      DUST: svg_haze_fog_dust_smoke
+      FOG: svg_haze_fog_dust_smoke
+      HAZE: svg_haze_fog_dust_smoke
+      HAZE_FOG_DUST_SMOKE: svg_haze_fog_dust_smoke
+      SMOKE: svg_haze_fog_dust_smoke
+      FLURRIES: svg_flurries
+      HAIL: svg_heavy_rain
+      HAIL_SHOWERS: svg_heavy_rain
+      HEAVY_RAIN: svg_heavy_rain
+      HEAVY_RAIN_SHOWERS: svg_heavy_rain
+      MODERATE_TO_HEAVY_RAIN: svg_heavy_rain
+      RAIN: svg_heavy_rain
+      RAIN_PERIODICALLY_HEAVY: svg_heavy_rain
+      HEAVY_SNOW: svg_heavy_snow
+      HURRICANE: svg_hurricane
+      ICY: svg_icy
+      ISOLATED_SCATTERED_THUNDERSTORMS: svg_isolated_scattered_thunderstorms_day
+      ISOLATED_SCATTERED_THUNDERSTORMS_NIGHT: svg_isolated_scattered_thunderstorms_night
+      ISOLATED_THUNDERSTORMS: svg_isolated_thunderstorms
+      SCATTERED_THUNDERSTORMS: svg_isolated_thunderstorms
+      LIGHT_RAIN: svg_showers_rain
+      LIGHT_RAIN_SHOWERS: svg_showers_rain
+      LIGHT_TO_MODERATE_RAIN: svg_showers_rain
+      RAIN_SHOWERS: svg_showers_rain
+      MOSTLY_CLEAR: svg_mostly_clear_day
+      MOSTLY_CLEAR_NIGHT: svg_mostly_clear_night
+      MOSTLY_CLOUDY: svg_mostly_cloudy_day
+      MOSTLY_CLOUDY_NIGHT: svg_mostly_cloudy_night
+      MOSTLY_SUNNY: svg_mostly_sunny
+      PARTLY_CLOUDY: svg_partly_cloudy
+      PARTLY_CLOUDY_NIGHT: svg_partly_cloudy_night
+      SCATTERED_SHOWERS: svg_scattered_showers_day
+      SCATTERED_SHOWERS_NIGHT: svg_scattered_showers_night
+      SCATTERED_SNOW_SHOWERS: svg_scattered_snow_showers_day
+      SCATTERED_SNOW_SHOWERS_NIGHT: svg_scattered_snow_showers_night
+      SUNNY: svg_sunny
+      THUNDERSHOWER: svg_thunderstorms
+      THUNDERSTORM: svg_strong_thunderstorms
+      THUNDERSTORMS: svg_strong_thunderstorms
+      TORNADO: svg_tornado
+      TROPICAL_STORM: svg_tropical_storm_hurricane
+      TROPICAL_STORM_HURRICANE: svg_tropical_storm_hurricane
+      VERY_COLD: svg_very_cold
+      VERY_HOT: svg_very_hot
+      WINDY: svg_windy
+      WIND_AND_RAIN: svg_windy
+      LIGHT_THUNDERSTORM_RAIN: svg_thunderstorms
+      HEAVY_THUNDERSTORM: svg_strong_thunderstorms
+      TYPE_UNSPECIFIED: img_unknown
+
+text_sensor:
+  - platform: template
+    id: forecast_icon_0
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour0_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: forecast_icon_1
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour1_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: forecast_icon_2
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour2_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: forecast_icon_3
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour3_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: forecast_icon_4
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour4_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: forecast_icon_5
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: hour5_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+interval:
+  - interval: 15min
+    startup_delay: 1min
+    then:
+      - http_request.get:
+          url: !secret google_weather_hourly_url
+          max_response_buffer_size: 32kb   # log the body size below, then tune
+          capture_response: true
+          request_headers:
+            Content-Type: application/json
+          on_response:
+            then:
+              - lambda: |-
+                  static const char *const TAG = "weather_forecast";
+                  if (response->status_code != 200) {
+                    ESP_LOGW(TAG, "HTTP status %d", response->status_code);
+                    return;
+                  }
+                  ESP_LOGD(TAG, "Response body: %u bytes", (unsigned) body.size());
+
+                  // Only keep the fields we use; this keeps the parsed document small.
+                  JsonDocument filter;
+                  filter["forecastHours"][0]["temperature"]["degrees"] = true;
+                  filter["forecastHours"][0]["precipitation"]["probability"]["percent"] = true;
+                  filter["forecastHours"][0]["weatherCondition"]["description"]["text"] = true;
+                  filter["forecastHours"][0]["weatherCondition"]["type"] = true;
+                  filter["forecastHours"][0]["displayDateTime"]["hours"] = true;
+                  filter["forecastHours"][0]["displayDateTime"]["minutes"] = true;
+                  filter["forecastHours"][0]["isDaytime"] = true;
+
+                  JsonDocument doc;
+                  DeserializationError error = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+                  if (error) {
+                    ESP_LOGE(TAG, "JSON Parsing failed: %s", error.c_str());
+                    return;
+                  }
+                  JsonArray forecast_list = doc["forecastHours"];
+                  if (forecast_list.isNull()) {
+                    ESP_LOGE(TAG, "JSON 'forecastHours' array not found!");
+                    return;
+                  }
+
+                  lv_obj_t *time_lbl[6] = {id(hour0_time), id(hour1_time), id(hour2_time), id(hour3_time), id(hour4_time), id(hour5_time)};
+                  lv_obj_t *temp_lbl[6] = {id(hour0_temp), id(hour1_temp), id(hour2_temp), id(hour3_temp), id(hour4_temp), id(hour5_temp)};
+                  lv_obj_t *pct_lbl[6] = {id(hour0_precip_pct), id(hour1_precip_pct), id(hour2_precip_pct), id(hour3_precip_pct), id(hour4_precip_pct), id(hour5_precip_pct)};
+                  lv_obj_t *cond_lbl[6] = {id(hour0_condition), id(hour1_condition), id(hour2_condition), id(hour3_condition), id(hour4_condition), id(hour5_condition)};
+                  esphome::text_sensor::TextSensor *icon[6] = {id(forecast_icon_0), id(forecast_icon_1), id(forecast_icon_2), id(forecast_icon_3), id(forecast_icon_4), id(forecast_icon_5)};
+
+                  // After 45 minutes past the hour, skip forecast[0] and start at the next hour.
+                  // If the clock isn't synced yet, don't skip anything.
+                  auto now = esphome::ESPTime::from_epoch_local(::time(nullptr));
+                  int offset = (now.is_valid() && now.minute >= 45) ? 1 : 0;
+                  int available = (int) forecast_list.size() - offset;
+                  int rows = available < 6 ? (available < 0 ? 0 : available) : 6;
+                  ESP_LOGD(TAG, "Minute %d, forecast offset %d, showing %d rows", now.minute, offset, rows);
+                  for (int i = 0; i < rows; i++) {
+                    JsonObject item = forecast_list[i + offset];
+                    float temp = item["temperature"]["degrees"] | NAN;
+                    float precip_pct = item["precipitation"]["probability"]["percent"] | NAN;
+                    const char *cond_text = item["weatherCondition"]["description"]["text"] | "Unknown";
+                    const char *cond_type = item["weatherCondition"]["type"] | "TYPE_UNSPECIFIED";
+
+                    // displayDateTime is already in local time
+                    int hours = item["displayDateTime"]["hours"] | 0;
+                    int minutes = item["displayDateTime"]["minutes"] | 0;
+                    char forecast_time[8];
+                    snprintf(forecast_time, sizeof(forecast_time), "%02d:%02d", hours, minutes);
+
+                    // Prefer the API's own day/night flag; if it is missing, assume 07:00-19:00 is day
+                    bool night = item["isDaytime"].is<bool>() ? !item["isDaytime"].as<bool>()
+                                                              : (hours < 7 || hours >= 19);
+                    std::string key = wx::icon_key(cond_type, night);
+
+                    ESP_LOGD(TAG, "Forecast %s %s %.1f", forecast_time, key.c_str(), temp);
+
+                    lv_label_set_text(time_lbl[i], forecast_time);
+                    wx::deg(temp_lbl[i], temp);
+                    wx::pct(pct_lbl[i], precip_pct);
+                    lv_label_set_text(cond_lbl[i], cond_text);
+                    if (icon[i]->state != key) icon[i]->publish_state(key);
+                  }
+                  ESP_LOGI(TAG, "Forecast updated successfully");
+
+lvgl:
+  pages:
+    - id: forecast_display
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+      bg_color: 0x111827
+      pad_all: 0
+      scrollable: false
+      align: CENTER
+      widgets:
+        - obj:
+            id: forecast_display_whole_screen
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_color: 0x000000
+            border_width: 0
+            radius: 0
+            scrollbar_mode: "OFF"
+            scrollable: false
+            pad_all: 0
+            on_short_click:
+              then:
+                - lvgl.page.next:
+            widgets:
+              # Common page container: header row (title | time) + content area
+              - obj:
+                  layout:
+                    type: grid
+                    grid_rows: [CONTENT, CONTENT]
+                    grid_columns: [365, 95]
+                    pad_row: 0
+                    pad_column: 3
+                  width: 98%
+                  height: 98%
+                  bg_color: 0x000000
+                  border_width: 0
+                  radius: 0
+                  pad_all: 5
+                  scrollable: false
+                  widgets:
+                    - label:
+                        id: header_label
+                        text: "Hourly Forecast"
+                        text_font: ${forecast_header_text_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 0
+                        grid_cell_x_align: START
+                        grid_cell_y_align: CENTER
+                    - label:
+                        id: hourly_header_time
+                        text: "--:--"
+                        text_font: ${hourly_header_time_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 1
+                        grid_cell_x_align: END
+                        grid_cell_y_align: CENTER
+                    # ~~~~ Content area ~~~~
+                    - obj:
+                        id: forecast_content_area
+                        grid_cell_row_pos: 1
+                        grid_cell_column_pos: 0
+                        grid_cell_column_span: 2
+                        scrollable: false
+                        width: 98%
+                        height: 90%
+                        bg_color: 0x000000
+                        border_width: 0
+                        radius: 0
+                        pad_all: 1
+                        layout:
+                          type: grid
+                          grid_rows: [FR(1), FR(1), FR(1), FR(1), FR(1), FR(1)]
+                          grid_columns: [CONTENT, CONTENT, CONTENT, CONTENT, CONTENT]
+                          pad_row: 5
+                          pad_column: 15
+                        widgets:
+                          # First Row
+                          - label:
+                              id: hour0_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour0_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour0_img
+                              src: img_unknown
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour0_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour0_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Second Row
+                          - label:
+                              id: hour1_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour1_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour1_img
+                              src: img_unknown
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour1_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour1_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Third Row
+                          - label:
+                              id: hour2_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour2_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour2_img
+                              src: img_unknown
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour2_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour2_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Fourth Row
+                          - label:
+                              id: hour3_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour3_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour3_img
+                              src: img_unknown
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour3_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour3_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Fifth Row
+                          - label:
+                              id: hour4_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour4_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour4_img
+                              src: img_unknown
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour4_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour4_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Sixth Row
+                          - label:
+                              id: hour5_time
+                              text: "--:--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour5_temp
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: hour5_img
+                              src: img_unknown
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour5_precip_pct
+                              text: "--"
+                              text_font: ${info_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: hour5_condition
+                              long_mode: SCROLL_CIRCULAR
+                              text: "..."
+                              text_font: ${condition_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER

@@ -1,0 +1,38 @@
+# === Barometric pressure trend arrow ========================================
+# Source: Home Assistant "Derivative" helper on the pressure sensor
+#   (time unit: hours, time window: 1 hour)  ->  sensor.outside_wx_pressure_rate
+#
+# The helper reports pressure change per hour. The arrow image points right at
+# 0 degrees and is rotated linearly:
+#     rate =  +rapid  -> straight up    (rapid rise)
+#     rate =   0      -> horizontal     (steady)
+#     rate =  -rapid  -> straight down  (rapid fall)
+# Beyond +/-rapid the arrow stays straight up/down. The widget itself
+# (pressure_trend_arrow) lives in the pressure_cell of raintemp_info.yaml.
+# Math helpers: wx::trend_angle / wx::show_if_valid in common/wx_colors.h.
+
+substitutions:
+  # Rate treated as "rapid", in the helper's units per hour.
+  #   inHg/h: 0.06  (NWS "rising/falling rapidly")
+  #   hPa/h:  2.03  (same threshold, metric)
+  pressure_rapid_rate: "0.06"
+
+sensor:
+  - platform: homeassistant
+    id: pressure_rate
+    entity_id: sensor.outside_wx_pressure_rate
+    on_value:
+      then:
+        # hide the arrow while the sensor is unavailable/unknown (x is NaN)
+        - lambda: wx::show_if_valid(id(pressure_trend_arrow), x);
+        - lvgl.image.update:
+            id: pressure_trend_arrow
+            # tenths of a degree, clockwise (see wx::trend_angle)
+            rotation: !lambda return wx::trend_angle(x, ${pressure_rapid_rate});
+
+image:
+  - platform: file
+    file: "./images/pressure-arrow.png"
+    id: pressure_arrow_img
+    type: RGB565
+    transparency: alpha_channel

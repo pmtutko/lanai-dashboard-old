@@ -1,0 +1,295 @@
+# === Weather radar page (animated) ==========================================
+# Clock/date, http_request, "paused" and "rotation" live in the main file.
+#
+# ESPHome's online_image can decode BMP / JPEG / PNG / QOI but NOT GIF, so the
+# animation is a set of ${radar_frame_count} JPEG frames written by
+# generate_radar.py (radar_f0.jpg = oldest ... radar_f5.jpg = newest). Each
+# frame is its own online_image; an interval swaps which one the LVGL image
+# widget shows.
+#
+# PSRAM: every frame is decoded to RGB565 and stays resident, 480x400x2 =
+# 375 KB each. Changing radar_frame_count means adding/removing image entries
+# below AND changing NUM_FRAMES in generate_radar.py.
+#
+# Fetching: frames are downloaded one at a time (never in parallel) when the
+# page is shown, at most once per radar_refresh_ms. While a refresh is running
+# the animation pauses on a static frame so you never see a half-decoded one.
+
+substitutions:
+  radar_header_text_font: nunito_32
+  radar_header_time_font: nunito_36
+  radar_url_base: "http://homeassistant.local:8123/local/radar"
+  radar_frame_count: "6"          # keep in sync with NUM_FRAMES in generate_radar.py
+  radar_frame_ms: 500ms           # time per frame
+  radar_hold_ticks: "3"           # extra ticks to pause on the newest frame
+  radar_refresh_ms: "300000"      # 5 min (RainViewer updates about every 10 min)
+
+image:
+  - platform: online_image
+    id: wx_radar_f0
+    url: "${radar_url_base}/radar_f0.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 0);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+  - platform: online_image
+    id: wx_radar_f1
+    url: "${radar_url_base}/radar_f1.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 1);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+  - platform: online_image
+    id: wx_radar_f2
+    url: "${radar_url_base}/radar_f2.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 2);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+  - platform: online_image
+    id: wx_radar_f3
+    url: "${radar_url_base}/radar_f3.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 3);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+  - platform: online_image
+    id: wx_radar_f4
+    url: "${radar_url_base}/radar_f4.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 4);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+  - platform: online_image
+    id: wx_radar_f5
+    url: "${radar_url_base}/radar_f5.jpg"
+    format: JPEG
+    type: RGB565
+    update_interval: never
+    on_download_finished:
+      - lambda: 'id(wx_radar_loaded_mask) |= (1 << 5);'
+      - script.execute: wx_radar_fetch_next
+    on_error:
+      - script.execute: wx_radar_fetch_next
+
+globals:
+  - id: wx_radar_last_fetch      # millis() when the last refresh started (0 = never)
+    type: uint32_t
+    initial_value: '0'
+  - id: wx_radar_fetching        # true while the frame download chain is running
+    type: bool
+    initial_value: 'false'
+  - id: wx_radar_ready           # true once the first full download chain has finished
+    type: bool
+    initial_value: 'false'
+  - id: wx_radar_fetch_idx       # next frame to download
+    type: int
+    initial_value: '0'
+  - id: wx_radar_loaded_mask     # bit n set = frame n has been downloaded at least once
+    type: uint8_t
+    initial_value: '0'
+  - id: wx_radar_show_idx        # frame currently on screen
+    type: int
+    initial_value: '0'
+  - id: wx_radar_next_idx        # frame the interval wants to show (-1 = no change)
+    type: int
+    initial_value: '-1'
+  - id: wx_radar_hold            # remaining ticks to stay on the newest frame
+    type: int
+    initial_value: '0'
+
+script:
+  # Downloads the next frame in the chain. Each frame's on_download_finished /
+  # on_error calls this again, so only one download runs at a time.
+  # "queued" because an error can call back before the previous run returns.
+  - id: wx_radar_fetch_next
+    mode: queued
+    max_runs: 8
+    then:
+      - lambda: |-
+          static esphome::online_image::OnlineImage *const frames[] = {
+              id(wx_radar_f0), id(wx_radar_f1), id(wx_radar_f2),
+              id(wx_radar_f3), id(wx_radar_f4), id(wx_radar_f5)};
+          int i = id(wx_radar_fetch_idx);
+          if (i >= ${radar_frame_count}) {
+            id(wx_radar_fetching) = false;
+            id(wx_radar_ready) = true;
+            ESP_LOGI("radar", "Radar frames loaded (mask 0x%02X); free PSRAM %u KB, largest block %u KB",
+                     (unsigned) id(wx_radar_loaded_mask),
+                     (unsigned) (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                     (unsigned) (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+            return;
+          }
+          id(wx_radar_fetch_idx) = i + 1;
+          frames[i]->update();
+
+# Animation tick: show the next downloaded frame while the radar page is visible.
+interval:
+  - interval: ${radar_frame_ms}
+    then:
+      - if:
+          condition:
+            lambda: 'return id(wx_radar_display).is_showing();'
+          then:
+            - lambda: |-
+                id(wx_radar_next_idx) = -1;
+                const uint8_t mask = id(wx_radar_loaded_mask);
+                if (mask == 0) return;
+                // Refresh in progress: hold still (but never longer than 60 s,
+                // in case a download hangs).
+                if (id(wx_radar_fetching) && id(wx_radar_ready) &&
+                    (millis() - id(wx_radar_last_fetch)) < 60000) return;
+                if (id(wx_radar_hold) > 0) {
+                  id(wx_radar_hold)--;
+                  return;
+                }
+                int i = id(wx_radar_show_idx);
+                for (int n = 0; n < ${radar_frame_count}; n++) {
+                  i = (i + 1) % ${radar_frame_count};
+                  if (mask & (1 << i)) break;
+                }
+                id(wx_radar_show_idx) = i;
+                id(wx_radar_next_idx) = i;
+                // Linger on the newest downloaded frame before looping.
+                if (i == 31 - __builtin_clz((unsigned) mask)) id(wx_radar_hold) = ${radar_hold_ticks};
+            - if:
+                condition:
+                  lambda: 'return id(wx_radar_next_idx) >= 0;'
+                then:
+                  - lvgl.image.update:
+                      id: wx_radar_cell_bg
+                      src: !lambda |-
+                        static esphome::image::Image *const frames[] = {
+                            id(wx_radar_f0), id(wx_radar_f1), id(wx_radar_f2),
+                            id(wx_radar_f3), id(wx_radar_f4), id(wx_radar_f5)};
+                        return frames[id(wx_radar_next_idx)];
+
+lvgl:
+  pages:
+    - id: wx_radar_display
+      on_load:
+        then:
+          # Start a refresh the first time, then at most every radar_refresh_ms.
+          # (If a chain ever hangs, this also restarts it after the refresh interval.)
+          - if:
+              condition:
+                lambda: 'return id(wx_radar_last_fetch) == 0 || (millis() - id(wx_radar_last_fetch)) > ${radar_refresh_ms};'
+              then:
+                - lambda: |-
+                    id(wx_radar_fetching) = true;
+                    id(wx_radar_fetch_idx) = 0;
+                    id(wx_radar_last_fetch) = millis();
+                - script.execute: wx_radar_fetch_next
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+      bg_color: 0x111827
+      pad_all: 0
+      scrollable: false
+      align: CENTER
+      widgets:
+        - obj:
+            id: wx_radar_display_whole_screen
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_color: 0x000000
+            border_width: 0
+            radius: 0
+            scrollbar_mode: "OFF"
+            scrollable: false
+            pad_all: 0
+            on_short_click:
+              then:
+                - lvgl.page.next:
+            widgets:
+              # Common page container: header row (date | time) + content area
+              - obj:
+                  layout:
+                    type: grid
+                    grid_rows: [CONTENT, FR(1)]
+                    grid_columns: [365, 95]
+                    pad_row: 0
+                    pad_column: 3
+                    multiple_widgets_per_cell: true
+                  width: 98%
+                  height: 98%
+                  bg_color: 0x000000
+                  border_width: 0
+                  radius: 0
+                  pad_all: 5
+                  scrollbar_mode: "OFF"
+                  scrollable: false
+                  widgets:
+                    - label:
+                        id: wx_radar_header_date
+                        text: "--- -- --- ----"
+                        text_font: ${radar_header_text_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 0
+                        grid_cell_x_align: START
+                        grid_cell_y_align: CENTER
+                    - label:
+                        id: wx_radar_header_time
+                        text: "--:--"
+                        text_font: ${radar_header_time_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 1
+                        grid_cell_x_align: END
+                        grid_cell_y_align: CENTER
+
+                    # ~~~~ Content area ~~~~
+                    - obj:
+                        id: wx_radar_content_cell
+                        grid_cell_row_pos: 1
+                        grid_cell_column_pos: 0
+                        grid_cell_column_span: 2
+                        width: 480
+                        height: 400
+                        pad_all: 0
+                        border_width: 0
+                        scrollbar_mode: "OFF"
+                        scrollable: false
+                        widgets:
+                          # Radar frame (swapped by the interval above)
+                          - image:
+                              id: wx_radar_cell_bg
+                              src: wx_radar_f0
+                              x: 0
+                              y: 0
+                              width: 480
+                              height: 400
+                              scrollbar_mode: "OFF"
+                              scrollable: false

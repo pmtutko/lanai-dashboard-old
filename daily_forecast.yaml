@@ -1,0 +1,641 @@
+# === Daily forecast page (Google Weather API: today + next five days) =========
+# Layout per row:  Day | condition icon | high | low | umbrella | precip %
+# Row 1 = today's daytime forecast until 18:00, then tonight's (night icon, night
+# precip). Rows 2-6 = the next five days.
+#
+# Depends on hourly_forecast.yaml (must also be included as a package):
+#  * re-uses its wx_icon_map and svg_* / img_unknown icon images, so no icon is
+#    compiled into flash twice and no ids collide;
+#  * nothing else is shared. Every substitution, id and global here is prefixed
+#    "daily_" / "day<N>_" so it cannot clash with the hourly page.
+#
+# Needed elsewhere (see notes in the chat reply):
+#  * secrets.yaml:  google_weather_daily_url
+#  * lanai-dashboard.yaml: add this file under packages (after hourly_forecasts)
+#    and add a daily_header_time line to the update_clock_labels script.
+#
+# Google "forecast/days:lookup" response, fields used:
+#   forecastDays[].displayDate.{year,month,day}
+#   forecastDays[].maxTemperature.degrees / minTemperature.degrees
+#   forecastDays[].daytimeForecast / nighttimeForecast .weatherCondition.type
+#   forecastDays[].daytimeForecast.precipitation.probability.percent
+#   forecastDays[].nighttimeForecast.precipitation.probability.percent
+# Request days=6 (today + five more).
+
+substitutions:
+  daily_header_text_font: nunito_32
+  daily_header_time_font: nunito_36
+  daily_info_font: nunito_28
+  daily_hi_color: "0xFFFF19"
+  daily_lo_color: "0x19FFFF"
+  # Row 1 = today's daytime forecast until this hour (24h clock), then tonight's.
+  daily_evening_hour: "18"
+  daily_refresh_interval: 30min
+  # NOTE: ESPHome resolves image paths relative to the config folder, like the
+  # other pages ("./images/..."). Change this if your umbrella lives elsewhere.
+  daily_umbrella_file: "./images/umbrella.png"
+
+image:
+  - platform: file
+    file: ${daily_umbrella_file}
+    id: img_umbrella
+    type: RGB565
+    resize: 48x48
+    transparency: alpha_channel
+
+text_sensor:
+  - platform: template
+    id: daily_icon_0
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day0_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: daily_icon_1
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day1_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: daily_icon_2
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day2_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: daily_icon_3
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day3_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: daily_icon_4
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day4_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+  - platform: template
+    id: daily_icon_5
+    internal: true
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: day5_img
+            src: !lambda return id(wx_icon_map)[x.c_str()];
+
+globals:
+  - id: daily_shown_night      # true when row 1 is currently showing tonight's forecast
+    type: bool
+    initial_value: 'false'
+  - id: daily_fetched          # true once a fetch has been parsed successfully
+    type: bool
+    initial_value: 'false'
+
+script:
+  - id: daily_fetch
+    mode: single
+    then:
+      - http_request.get:
+          url: !secret google_weather_daily_url
+          max_response_buffer_size: 48kb   # check the logged body size, then tune
+          capture_response: true
+          request_headers:
+            Content-Type: application/json
+          on_response:
+            then:
+              - lambda: |-
+                  static const char *const TAG = "daily_forecast";
+                  if (response->status_code != 200) {
+                    ESP_LOGW(TAG, "HTTP status %d", response->status_code);
+                    return;
+                  }
+                  ESP_LOGD(TAG, "Response body: %u bytes", (unsigned) body.size());
+
+                  // Only keep the fields we use.
+                  JsonDocument filter;
+                  filter["forecastDays"][0]["displayDate"]["year"] = true;
+                  filter["forecastDays"][0]["displayDate"]["month"] = true;
+                  filter["forecastDays"][0]["displayDate"]["day"] = true;
+                  filter["forecastDays"][0]["maxTemperature"]["degrees"] = true;
+                  filter["forecastDays"][0]["minTemperature"]["degrees"] = true;
+                  filter["forecastDays"][0]["daytimeForecast"]["weatherCondition"]["type"] = true;
+                  filter["forecastDays"][0]["daytimeForecast"]["precipitation"]["probability"]["percent"] = true;
+                  filter["forecastDays"][0]["nighttimeForecast"]["weatherCondition"]["type"] = true;
+                  filter["forecastDays"][0]["nighttimeForecast"]["precipitation"]["probability"]["percent"] = true;
+
+                  JsonDocument doc;
+                  DeserializationError error = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+                  if (error) {
+                    ESP_LOGE(TAG, "JSON Parsing failed: %s", error.c_str());
+                    return;
+                  }
+                  JsonArray days = doc["forecastDays"];
+                  if (days.isNull()) {
+                    ESP_LOGE(TAG, "JSON 'forecastDays' array not found!");
+                    return;
+                  }
+
+                  lv_obj_t *dow_lbl[6] = {id(day0_dow), id(day1_dow), id(day2_dow), id(day3_dow), id(day4_dow), id(day5_dow)};
+                  lv_obj_t *hi_lbl[6] = {id(day0_hi), id(day1_hi), id(day2_hi), id(day3_hi), id(day4_hi), id(day5_hi)};
+                  lv_obj_t *lo_lbl[6] = {id(day0_lo), id(day1_lo), id(day2_lo), id(day3_lo), id(day4_lo), id(day5_lo)};
+                  lv_obj_t *pct_lbl[6] = {id(day0_precip_pct), id(day1_precip_pct), id(day2_precip_pct), id(day3_precip_pct), id(day4_precip_pct), id(day5_precip_pct)};
+                  esphome::text_sensor::TextSensor *icon[6] = {id(daily_icon_0), id(daily_icon_1), id(daily_icon_2), id(daily_icon_3), id(daily_icon_4), id(daily_icon_5)};
+
+                  // Whole degrees with just the degree sign (and no "-0").
+                  auto set_deg = [](lv_obj_t *lbl, float v) {
+                    if (std::isnan(v)) {
+                      lv_label_set_text(lbl, "--");
+                      return;
+                    }
+                    char b[12];
+                    snprintf(b, sizeof(b), "%.0f\u00B0", std::round(v) + 0.0f);
+                    lv_label_set_text(lbl, b);
+                  };
+
+                  // The header row shows today's daytime forecast until the evening hour
+                  // (default 18:00), then tonight's forecast. If the clock isn't
+                  // synced yet, assume daytime.
+                  auto now = id(ha_time).now();
+                  bool tonight = now.is_valid() && now.hour >= ${daily_evening_hour};
+
+                  int rows = (int) days.size() < 6 ? (int) days.size() : 6;
+                  for (int i = 0; i < rows; i++) {
+                    JsonObject d = days[i];
+                    bool night_row = (i == 0) && tonight;
+                    float hi = d["maxTemperature"]["degrees"] | NAN;
+                    float lo = d["minTemperature"]["degrees"] | NAN;
+
+                    float p_day = d["daytimeForecast"]["precipitation"]["probability"]["percent"] | NAN;
+                    float p_night = d["nighttimeForecast"]["precipitation"]["probability"]["percent"] | NAN;
+                    float precip;
+                    const char *type;
+                    if (i == 0) {
+                      // Today: only the half of the day being shown
+                      precip = night_row ? p_night : p_day;
+                      type = night_row ? (d["nighttimeForecast"]["weatherCondition"]["type"] | "TYPE_UNSPECIFIED")
+                                       : (d["daytimeForecast"]["weatherCondition"]["type"] | "TYPE_UNSPECIFIED");
+                    } else {
+                      precip = std::fmax(p_day, p_night);  // fmax ignores a NaN operand
+                      type = d["daytimeForecast"]["weatherCondition"]["type"] | "TYPE_UNSPECIFIED";
+                    }
+
+                    // Weekday from the calendar date (displayDate is already local)
+                    int y = d["displayDate"]["year"] | 0;
+                    int m = d["displayDate"]["month"] | 0;
+                    int dd = d["displayDate"]["day"] | 0;
+                    char dow[8] = "---";
+                    if (y > 0 && m > 0 && dd > 0) {
+                      struct tm t = {};
+                      t.tm_year = y - 1900;
+                      t.tm_mon = m - 1;
+                      t.tm_mday = dd;
+                      t.tm_hour = 12;
+                      t.tm_isdst = -1;
+                      if (mktime(&t) != (time_t) -1) strftime(dow, sizeof(dow), "%a", &t);
+                    }
+
+                    ESP_LOGD(TAG, "Day %s %s%s hi %.1f lo %.1f precip %.0f", dow, type, night_row ? " (tonight)" : "", hi, lo, precip);
+
+                    lv_label_set_text(dow_lbl[i], dow);
+                    set_deg(hi_lbl[i], hi);
+                    set_deg(lo_lbl[i], lo);
+                    wx::pct(pct_lbl[i], precip);
+                    std::string key = wx::icon_key(type, night_row);  // night icon variant for tonight
+                    if (icon[i]->state != key) icon[i]->publish_state(key);
+                  }
+                  id(daily_shown_night) = tonight;
+                  id(daily_fetched) = true;
+                  ESP_LOGI(TAG, "Daily forecast updated successfully (%d rows, row 1 %s)", rows, tonight ? "tonight" : "daytime");
+
+interval:
+  - interval: ${daily_refresh_interval}
+    startup_delay: 90s      # staggered after the hourly page's first request
+    then:
+      - script.execute: daily_fetch
+  # Re-fetch right after the day/night switch (18:00 and midnight) so row 1
+  # changes on time instead of waiting for the next scheduled refresh.
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            lambda: |-
+              if (!id(daily_fetched)) return false;
+              auto now = id(ha_time).now();
+              if (!now.is_valid()) return false;
+              return (now.hour >= ${daily_evening_hour}) != id(daily_shown_night);
+          then:
+            - script.execute: daily_fetch
+
+lvgl:
+  pages:
+    - id: daily_display
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+      bg_color: 0x111827
+      pad_all: 0
+      scrollable: false
+      align: CENTER
+      widgets:
+        - obj:
+            id: daily_display_whole_screen
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_color: 0x000000
+            border_width: 0
+            radius: 0
+            scrollbar_mode: "OFF"
+            scrollable: false
+            pad_all: 0
+            on_short_click:
+              then:
+                - lvgl.page.next:
+            widgets:
+              # Common page container: header row (title | time) + content area
+              - obj:
+                  layout:
+                    type: grid
+                    grid_rows: [CONTENT, CONTENT]
+                    grid_columns: [365, 95]
+                    pad_row: 0
+                    pad_column: 3
+                  width: 98%
+                  height: 98%
+                  bg_color: 0x000000
+                  border_width: 0
+                  radius: 0
+                  pad_all: 5
+                  scrollable: false
+                  widgets:
+                    - label:
+                        id: daily_header_label
+                        text: "Daily Forecast"
+                        text_font: ${daily_header_text_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 0
+                        grid_cell_x_align: START
+                        grid_cell_y_align: CENTER
+                    - label:
+                        id: daily_header_time
+                        text: "--:--"
+                        text_font: ${daily_header_time_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 1
+                        grid_cell_x_align: END
+                        grid_cell_y_align: CENTER
+                    # ~~~~ Content area ~~~~
+                    - obj:
+                        id: daily_content_area
+                        grid_cell_row_pos: 1
+                        grid_cell_column_pos: 0
+                        grid_cell_column_span: 2
+                        scrollable: false
+                        width: 98%
+                        height: 90%
+                        bg_color: 0x000000
+                        border_width: 0
+                        radius: 0
+                        pad_all: 1
+                        layout:
+                          type: grid
+                          grid_rows: [FR(1), FR(1), FR(1), FR(1), FR(1), FR(1)]
+                          # day | icon | high | low | umbrella | precip %
+                          grid_columns: [80, 60, 72, 72, 34, 76]
+                          grid_column_align: SPACE_EVENLY
+                          pad_row: 5
+                          pad_column: 6
+                        widgets:
+                          # Row First
+                          - label:
+                              id: day0_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day0_img
+                              src: img_unknown
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day0_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day0_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day0_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day0_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Row Second
+                          - label:
+                              id: day1_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day1_img
+                              src: img_unknown
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day1_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day1_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day1_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day1_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Row Third
+                          - label:
+                              id: day2_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day2_img
+                              src: img_unknown
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day2_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day2_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day2_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day2_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Row Fourth
+                          - label:
+                              id: day3_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day3_img
+                              src: img_unknown
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day3_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day3_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day3_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day3_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Row Fifth
+                          - label:
+                              id: day4_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day4_img
+                              src: img_unknown
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day4_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day4_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day4_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day4_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 4
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+
+                          # Row Sixth
+                          - label:
+                              id: day5_dow
+                              text: "---"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day5_img
+                              src: img_unknown
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day5_hi
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_hi_color}
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 2
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day5_lo
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: ${daily_lo_color}
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 3
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                          - image:
+                              id: day5_umbrella
+                              src: img_umbrella
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 4
+                              grid_cell_x_align: END
+                              grid_cell_y_align: CENTER
+                          - label:
+                              id: day5_precip_pct
+                              text: "--"
+                              text_font: ${daily_info_font}
+                              text_color: white
+                              grid_cell_row_pos: 5
+                              grid_cell_column_pos: 5
+                              grid_cell_x_align: START
+                              grid_cell_y_align: CENTER

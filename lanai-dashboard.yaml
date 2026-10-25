@@ -1,0 +1,265 @@
+# Board: Guition ESP32-S3-4848S040 480*480 Smart Screen
+# Definition: definitions/boards/guition_esp32_s3_4848s040/manifest.yaml
+#
+# Refactored: everything shared by more than one page now lives here
+# (clock, brightness, page rotation, http_request, sun, LVGL base settings and
+# shared styles). The page files only contain their own sensors and widgets.
+#
+# Needs one extra entry in secrets.yaml:
+#   google_weather_url: "https://weather.googleapis.com/v1/forecast/hours:lookup?key=<NEW_KEY>&location.latitude=<LAT>&location.longitude=<LON>&hours=6&units_system=IMPERIAL"
+
+substitutions:
+  default_daytime_screen_brightness: 75%
+  default_nighttime_screen_brightness: 50%
+
+esphome:
+  name: lanai-dashboard
+  friendly_name: Lanai Dashboard
+  comment: "Lanai Dashboard running on Guition ESP32-S3 480x480 Touchscreen"
+  platformio_options:
+    board_build.flash_size: 16MB
+  includes:
+    - ./wx_colors.h
+  on_boot:
+    - priority: 1000.0   # runs at the earliest possible point in the boot sequence
+      then:
+        # ensures the display backlight is off to help prevent graphics smearing
+        - light.turn_off:
+            id: display_backlight
+            transition_length: 0s
+        - lambda: "id(display_backlight).loop();"  # forces immediate execution
+    - priority: 800.0
+      then:
+        - logger.log: "Entering boot sequence, waiting for wifi connection..."
+        - wait_until:
+            wifi.connected
+        - logger.log: "Wifi connected!"
+    - priority: -100
+      # this is the last stage of boot loading to run
+      then:
+        - logger.log: "Booting (priority -100)..."
+        - logger.log: "Enabling LVGL display"
+        - delay: 500ms
+        - lvgl.resume: # begins the display refresh sequence now that all is ready
+        # Start dim; the correct day/night level is applied on first time sync.
+        - light.turn_on:
+            id: display_backlight
+            brightness: ${default_nighttime_screen_brightness}
+
+# === Other Supporting Pages and Common Objects
+packages:
+  # Include some basic color definitions
+  #common_colors: !include ./common/color.yaml
+  # Include support for common fonts (trimmed to the fonts actually used)
+  common_fonts: !include ./fonts.yaml
+  # Add page to display temperature and rainfall info
+  rain_temp: !include ./raintemp_info.yaml
+  # Show hourly weather forecasts
+  weather_forecasts: !include ./hourly_forecast.yaml
+  # Show daily weather forecasts
+  daily_forecasts: !include ./daily_forecast.yaml
+  # Add the wind compass page
+  wind_compass-2: !include ./wind_compass.yaml
+  # Add the weather radar page
+  weather_radar: !include ./weather_radar.yaml
+  # Pressure trend arrow (HA Derivative helper -> rotated arrow on the raintemp page)
+  pressure_trend: !include ./pressure_trend.yaml
+
+# The debug component adds code size and runtime sensors. Enable it only while
+# diagnosing a problem.
+#debug:
+
+# Define the MCU parameters
+psram:
+  mode: octal
+  speed: 80MHz
+
+esp32:
+  variant: esp32s3
+  board: esp32-s3-devkitc-1-n16r8
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_LCD_RGB_RESTART_IN_VSYNC: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_ESPTOOLPY_FLASHSIZE_16MB: "y"
+      CONFIG_ESPTOOLPY_FLASHSIZE: "16MB"
+  # Two 7 MB OTA slots. The FIRST flash after changing this must be over USB.
+  partitions: lanai_dash_ota_16mb.csv
+
+logger:
+  hardware_uart: UART0
+  level: INFO      # DEBUG strings cost flash; raise temporarily when troubleshooting
+
+api:
+  encryption:
+    key: !secret lanai_dashboard_encryption_key
+
+# OTA is possible again now that the partition table has two large app slots.
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Lanai Dashboard Fallback Hotspot
+    password: !secret lanai_dashboard_fallback_wifi_password
+
+# One http_request block for everything (forecast API + radar image).
+http_request:
+  useragent: ESPHome Lanai Dashboard
+  timeout: 30s
+
+captive_portal:
+
+output:
+  - platform: ledc
+    frequency: 150Hz
+    id: backlight_output
+    min_power: 0.01
+    pin: 38
+    zero_means_zero: true
+
+light:
+  - platform: monochromatic
+    default_transition_length: 1s
+    id: display_backlight
+    name: Backlight
+    output: backlight_output
+    restore_mode: ALWAYS_OFF
+
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO48
+    mosi_pin: GPIO47
+
+i2c:
+  - id: touchscreen_bus
+    scl:
+      ignore_strapping_warning: true
+      number: 45
+    sda: 19
+
+display:
+  - platform: mipi_rgb
+    model: GUITION-4848S040
+    id: my_display
+    color_order: RGB
+    # 6 MHz pixel clock gives the bounce buffer more headroom during LVGL
+    # full-screen flushes (e.g. new artwork). 8 MHz still works but leaves
+    # less margin and produces brief tearing marks on heavy redraws.
+    pclk_frequency: 6MHz
+    update_interval: never
+    auto_clear_enabled: False
+
+touchscreen:
+  platform: gt911
+  id: my_touchscreen
+  display: my_display
+  i2c_id: touchscreen_bus
+  transform:
+    mirror_x: true
+    mirror_y: true
+
+# === LVGL base settings shared by every page ===================================
+lvgl:
+  paused: true   # prevents screen rendering on boot; resumed in on_boot above
+  rotation: 270
+  style_definitions:
+    # Rounded tile used on the temperature / rain page
+    - id: wx_tile
+      bg_color: 0x000000
+      border_width: 2
+      border_color: 0xEBEDEF
+      radius: 10
+      pad_all: 2
+    # Centered white text inside a tile
+    - id: wx_tile_text
+      text_color: 0xFFFFFF
+      text_align: CENTER
+
+# === Sun: used only to dim / brighten the backlight ============================
+sun:
+  id: local_sun
+  latitude: !secret latitude
+  longitude: !secret longitude
+  on_sunrise:
+    - then:
+        - light.turn_on:
+            id: display_backlight
+            brightness: ${default_daytime_screen_brightness}
+  on_sunset:
+    - then:
+        - light.turn_on:
+            id: display_backlight
+            brightness: ${default_nighttime_screen_brightness}
+
+globals:
+  - id: brightness_initialised
+    type: bool
+    initial_value: 'false'
+
+# === One clock for all pages ===================================================
+time:
+  - platform: homeassistant
+    id: ha_time
+    on_time_sync:
+      then:
+        - script.execute: update_clock_labels
+        # Set the right brightness once after the first sync. After that only
+        # sunrise/sunset change it, so manual changes from Home Assistant stick.
+        - if:
+            condition:
+              lambda: 'return !id(brightness_initialised);'
+            then:
+              - lambda: 'id(brightness_initialised) = true;'
+              - script.execute: apply_brightness
+    on_time:
+      - minutes: '*'
+        seconds: 0
+        then:
+          - script.execute: update_clock_labels
+
+script:
+  # Updates the clock/date labels of every page in a single pass.
+  - id: update_clock_labels
+    then:
+      - lambda: |-
+          auto now = id(ha_time).now();
+          if (!now.is_valid()) return;
+          char t[8];
+          char d[20];
+          now.strftime(t, sizeof(t), "%H:%M");
+          now.strftime(d, sizeof(d), "%a %d %b %Y");
+          lv_label_set_text(id(raintemp_header_time), t);
+          lv_label_set_text(id(raintemp_header_date), d);
+          lv_label_set_text(id(hourly_header_time), t);
+          lv_label_set_text(id(daily_header_time), t);
+          lv_label_set_text(id(windcompass_header_time), t);
+          lv_label_set_text(id(windcompass_header_date), d);
+          lv_label_set_text(id(wx_radar_header_time), t);
+          lv_label_set_text(id(wx_radar_header_date), d);
+
+  - id: apply_brightness
+    then:
+      - if:
+          condition:
+            sun.is_above_horizon:
+          then:
+            - light.turn_on:
+                id: display_backlight
+                brightness: ${default_daytime_screen_brightness}
+          else:
+            - light.turn_on:
+                id: display_backlight
+                brightness: ${default_nighttime_screen_brightness}
+
+# === Automatic page rotation ===================================================
+interval:
+  - interval: 15s
+    then:
+      - lvgl.page.next:

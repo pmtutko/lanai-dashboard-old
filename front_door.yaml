@@ -1,0 +1,155 @@
+# === Front door page ========================================================
+# Shown for 20 s when HA reports a person at the door, then returns to the
+# normal rotation. The page has `skip: true`, so lvgl.page.next/previous
+# (the 15 s interval, swipes, taps) never land on it.
+
+substitutions:
+  doorbell_header_text_font: nunito_32
+  doorbell_header_time_font: nunito_36
+  doorbell_display_time: 20s
+  # Gives HA time to write the new snapshot before the display fetches it.
+  doorbell_snapshot_delay: 2s
+
+globals:
+  - id: doorbell_active
+    type: bool
+    initial_value: 'false'
+
+# --- Person detection from Home Assistant ------------------------------------
+binary_sensor:
+  - platform: homeassistant
+    id: front_door_person
+    entity_id: binary_sensor.your_moms_video_doorbell_person_2
+    internal: true            # don't echo it back to HA
+    on_press:
+      then:
+        - script.execute: show_front_door
+
+# --- Snapshot image ------------------------------------------------------------
+image:
+  - platform: online_image
+    url: "http://homeassistant.local:8123/local/snapshots/frontdoor_snap.jpg"
+    format: JPEG
+    type: RGB565
+    id: front_door_snap
+    resize: 480x400            # same size as the radar image
+    update_interval: never     # fetched only when a person is detected
+    on_download_finished:
+      - lvgl.image.update:
+          id: front_door_cell_bg
+          src: front_door_snap
+
+script:
+  # Switch to the page immediately, fetch a fresh snapshot, hold, then leave.
+  - id: show_front_door
+    mode: restart              # a new detection restarts the 20 s
+    then:
+      - lambda: 'id(doorbell_active) = true;'
+      - lvgl.page.show:
+          id: front_door_display
+          animation: NONE
+          time: 0ms
+      - script.execute: fetch_front_door_snap   # runs in parallel
+      - delay: ${doorbell_display_time}
+      - script.execute: hide_front_door
+
+  - id: fetch_front_door_snap
+    mode: restart
+    then:
+      - delay: ${doorbell_snapshot_delay}
+      - component.update: front_door_snap
+
+  # Back to the normal rotation. The front door page is the last page, so
+  # "next" wraps around to the first regular page.
+  - id: hide_front_door
+    then:
+      - lambda: 'id(doorbell_active) = false;'
+      - lvgl.page.next:
+          animation: NONE
+          time: 0ms
+
+lvgl:
+  pages:
+    - id: front_door_display
+      skip: true               # never part of lvgl.page.next / previous
+      bg_color: 0x111827
+      pad_all: 0
+      scrollable: false
+      align: CENTER
+      widgets:
+        - obj:
+            id: front_door_display_whole_screen
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_color: 0x000000
+            border_width: 0
+            radius: 0
+            scrollbar_mode: "OFF"
+            scrollable: false
+            pad_all: 0
+            # Tap to dismiss early
+            on_short_click:
+              then:
+                - script.stop: show_front_door
+                - script.execute: hide_front_door
+            widgets:
+              - obj:
+                  layout:
+                    type: grid
+                    grid_rows: [CONTENT, FR(1)]
+                    grid_columns: [365, 95]
+                    pad_row: 0
+                    pad_column: 3
+                    multiple_widgets_per_cell: true
+                  width: 98%
+                  height: 98%
+                  bg_color: 0x000000
+                  border_width: 0
+                  radius: 0
+                  pad_all: 5
+                  scrollbar_mode: "OFF"
+                  scrollable: false
+                  widgets:
+                    - label:
+                        id: front_door_header_date
+                        text: "--- -- --- ----"
+                        text_font: ${doorbell_header_text_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 0
+                        grid_cell_x_align: START
+                        grid_cell_y_align: CENTER
+                    - label:
+                        id: front_door_header_time
+                        text: "--:--"
+                        text_font: ${doorbell_header_time_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 1
+                        grid_cell_x_align: END
+                        grid_cell_y_align: CENTER
+
+                    - obj:
+                        id: front_door_content_cell
+                        grid_cell_row_pos: 1
+                        grid_cell_column_pos: 0
+                        grid_cell_column_span: 2
+                        width: 480
+                        height: 400
+                        pad_all: 0
+                        border_width: 0
+                        scrollbar_mode: "OFF"
+                        scrollable: false
+                        widgets:
+                          - image:
+                              id: front_door_cell_bg
+                              src: front_door_snap
+                              x: 0
+                              y: 0
+                              width: 480
+                              height: 400
+                              scrollbar_mode: "OFF"
+                              scrollable: false

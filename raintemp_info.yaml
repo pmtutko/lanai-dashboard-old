@@ -1,0 +1,467 @@
+# === Temperature / rainfall page ===========================================
+# Colour thresholds and label formatting live in common/wx_colors.h
+# (wx::paint / wx::deg ...), so each sensor needs one small lambda instead of
+# a long on_value_range block. The clock, date and sun/brightness logic are in
+# the main file; "paused" and "rotation" are set once there as well.
+
+sensor:
+  # What temperature is the pool sensor monitor reporting right now?
+  - platform: homeassistant
+    id: pool_temp
+    entity_id: sensor.pool_sensor_water_temperature
+    on_value:
+      then:
+        - lambda: |-
+            wx::deg(id(pool_temp_value), x);
+            wx::paint(id(pool_temp_cell), id(pool_temp_value), id(pool_temp_label), x, wx::POOL);
+
+  # What temperature is the backyard weather station reporting right now?
+  - platform: homeassistant
+    id: outside_temp
+    entity_id: sensor.wx_temperature
+    on_value:
+      then:
+        - lambda: |-
+            wx::deg(id(outside_temp_value), x);
+            wx::paint(id(outside_temp_cell), id(outside_temp_value), id(outside_temp_label), x, wx::OUTSIDE);
+
+  - platform: homeassistant
+    id: feels_like_temp
+    entity_id: sensor.wx_feels_like
+    on_value:
+      then:
+        - lambda: |-
+            wx::deg(id(feels_like_value), x);
+            wx::paint(id(feels_like_cell), id(feels_like_value), id(feels_like_label), x, wx::FEELS);
+
+  # What is the current humidity?
+  - platform: homeassistant
+    id: humidity_percent
+    entity_id: sensor.wx_humidity
+    on_value:
+      then:
+        - lambda: |-
+            wx::pct(id(humidity_value), x);
+            wx::paint(id(humidity_cell), id(humidity_value), id(humidity_label), x, wx::HUMIDITY);
+
+  # How much rain has the backyard weather station measured today so far?
+  - platform: homeassistant
+    id: rainfall_today
+    entity_id: sensor.outside_wx_tempest_rainfall_today
+    on_value:
+      then:
+        - lambda: wx::inches(id(rainfall_value), x);
+
+  # What is the current dewpoint reading from the backyard weather station?
+  - platform: homeassistant
+    id: dewpoint_current
+    entity_id: sensor.wx_dew_point
+    on_value:
+      then:
+        - lambda: wx::deg(id(dewpoint_value), x);
+
+  # What is the current atmospheric pressure reading from the backyard weather station?
+  - platform: homeassistant
+    id: pressure_current
+    entity_id: sensor.wx_air_pressure
+    on_value:
+      then:
+        - lambda: wx::fixed3(id(pressure_value), x);
+
+  # How many lightning strikes has the backyard weather station reported so far today?
+  - platform: homeassistant
+    id: lightning_today
+    entity_id: sensor.outside_wx_tempest_lightning_today
+    on_value:
+      then:
+        - lambda: wx::count(id(lightning_value), x);
+
+  # Pool sensor battery: icon + colour chosen in wx::battery (covers 0-100%)
+  - platform: homeassistant
+    id: pool_sensor_battery
+    entity_id: sensor.pool_sensor_battery_percent
+    on_value:
+      then:
+        - lambda: wx::battery(id(pool_temp_battery), x);
+
+substitutions:
+  raintemp_header_text_font: nunito_32
+  raintemp_header_time_font: nunito_36
+  info_title_font: roboto_700_20
+  battery_icon_font: icon_font_16
+  temperature_font: roboto_400_48
+  humidity_font: roboto_400_48
+  rainfall_font: roboto_400_48
+  lightning_font: roboto_400_48
+  pressure_font: roboto_700_32
+  raintemp_cell_width: 48%
+  raintemp_cell_height: 23%
+  raintemp_label_width: 100%
+  raintemp_label_height: 30%
+  raintemp_value_width: 100%
+  raintemp_value_height: 60%
+  raintemp_value_x_offset: 0
+  raintemp_value_y_offset: 25
+  pressure_y_offset: 35
+  # The value label leaves the right part of the pressure tile free for the trend arrow.
+  pressure_value_width: 70%
+  # Arrow placement inside pressure_cell: anchored to the tile's bottom-right corner,
+  # offsets in pixels (negative = move left / up). Fine-tune these two after a first look.
+  pressure_arrow_x: -2
+  pressure_arrow_y: -2
+
+lvgl:
+  pages:
+    - id: raintemp_display
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+      bg_color: 0x111827
+      pad_all: 0
+      scrollable: false
+      align: CENTER
+      widgets:
+        - obj:
+            id: raintemp_display_whole_screen
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            bg_color: 0x000000
+            border_width: 0
+            radius: 0
+            scrollbar_mode: "OFF"
+            scrollable: false
+            pad_all: 0
+            # on_short_click (not on_press) so a swipe doesn't also change the page
+            on_short_click:
+              then:
+                - lvgl.page.next:
+            widgets:
+              # Common page container: header row (date | time) + content area
+              - obj:
+                  layout:
+                    type: grid
+                    grid_rows: [CONTENT, CONTENT]
+                    grid_columns: [365, 95]
+                    pad_row: 0
+                    pad_column: 3
+                  width: 98%
+                  height: 98%
+                  bg_color: 0x000000
+                  border_width: 0
+                  radius: 0
+                  pad_all: 5
+                  scrollable: false
+                  widgets:
+                    - label:
+                        id: raintemp_header_date
+                        text: "--- -- --- ----"
+                        text_font: ${raintemp_header_text_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 0
+                        grid_cell_x_align: START
+                        grid_cell_y_align: CENTER
+                    - label:
+                        id: raintemp_header_time
+                        text: "--:--"
+                        text_font: ${raintemp_header_time_font}
+                        text_color: white
+                        grid_cell_row_pos: 0
+                        grid_cell_column_pos: 1
+                        grid_cell_x_align: END
+                        grid_cell_y_align: CENTER
+                    # ~~~~ Content area ~~~~
+                    - obj:
+                        id: raintemp_content_area
+                        grid_cell_row_pos: 1
+                        grid_cell_column_pos: 0
+                        grid_cell_column_span: 2
+                        scrollable: false
+                        width: 98%
+                        height: 90%
+                        bg_color: 0x000000
+                        border_width: 0
+                        radius: 0
+                        pad_all: 1
+                        layout:
+                          type: grid
+                          grid_rows: [FR(1), FR(1), FR(1), FR(1)]
+                          grid_columns: [FR(1), FR(1)]
+                          pad_row: 5
+                          pad_column: 15
+                        widgets:
+                          - obj:
+                              id: pool_temp_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: pool_temp_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${temperature_font}
+                                - obj:
+                                    # blank background behind the battery icon
+                                    id: pool_temp_battery_area
+                                    x: 182
+                                    y: 0
+                                    width: 20
+                                    height: 27
+                                    bg_color: 0x000000
+                                    border_width: 0
+                                    pad_all: 1
+                                    scrollbar_mode: "OFF"
+                                    widgets:
+                                      - label:
+                                          id: pool_temp_battery
+                                          x: 1
+                                          y: 2
+                                          width: 15
+                                          height: 25
+                                          text: "\U000F0081"    # battery-80 until the first reading arrives
+                                          text_color: 0xFFFFFF
+                                          text_align: LEFT
+                                          text_font: ${battery_icon_font}
+                                - label:
+                                    id: pool_temp_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Pool"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: outside_temp_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 0
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: outside_temp_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${temperature_font}
+                                - label:
+                                    id: outside_temp_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Outside"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: humidity_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: humidity_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${humidity_font}
+                                - label:
+                                    id: humidity_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Humidity"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: feels_like_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 1
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: feels_like_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${temperature_font}
+                                - label:
+                                    id: feels_like_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Feels Like"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: pressure_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: pressure_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${pressure_y_offset}
+                                    width: ${pressure_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${pressure_font}
+                                # Pressure trend arrow (50x50). Rotated by pressure_trend.yaml:
+                                # straight up = rapid rise, flat = steady, straight down = rapid fall.
+                                - image:
+                                    id: pressure_trend_arrow
+                                    src: pressure_arrow_img
+                                    width: 50
+                                    height: 50
+                                    align: BOTTOM_RIGHT
+                                    x: ${pressure_arrow_x}
+                                    y: ${pressure_arrow_y}
+                                    pivot_x: 25
+                                    pivot_y: 25
+                                    hidden: true     # shown once a valid trend arrives
+                                    scrollbar_mode: "OFF"
+                                    scrollable: false
+                                - label:
+                                    id: pressure_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Pressure"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: dewpoint_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 2
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: dewpoint_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${temperature_font}
+                                - label:
+                                    id: dewpoint_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Dewpoint"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: rainfall_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 0
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: rainfall_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${rainfall_font}
+                                - label:
+                                    id: rainfall_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Rainfall Today"
+                                    text_font: ${info_title_font}
+                          - obj:
+                              id: lightning_cell
+                              styles: wx_tile
+                              grid_cell_row_pos: 3
+                              grid_cell_column_pos: 1
+                              grid_cell_x_align: CENTER
+                              grid_cell_y_align: CENTER
+                              width: ${raintemp_cell_width}
+                              height: ${raintemp_cell_height}
+                              scrollbar_mode: "OFF"
+                              widgets:
+                                # draw the value first so that the label is on top of it
+                                - label:
+                                    id: lightning_value
+                                    styles: wx_tile_text
+                                    x: ${raintemp_value_x_offset}
+                                    y: ${raintemp_value_y_offset}
+                                    width: ${raintemp_value_width}
+                                    height: ${raintemp_value_height}
+                                    text_font: ${lightning_font}
+                                - label:
+                                    id: lightning_label
+                                    styles: wx_tile_text
+                                    x: 0
+                                    y: 0
+                                    width: ${raintemp_label_width}
+                                    height: ${raintemp_label_height}
+                                    text: "Lightning Today"
+                                    text_font: ${info_title_font}

@@ -1,0 +1,85 @@
+# -----------------------------------------------------------------------------
+# Common fonts (trimmed)
+#
+# Only fonts referenced by the Lanai Dashboard pages are kept. ESPHome compiles
+# every font listed here into flash whether or not a widget uses it, so add new
+# ones back only when a page actually needs them.
+#
+# Used by:
+#   nunito_24 .. nunito_36  headers, wind labels, forecast rows
+#   roboto_400_48           raintemp values (digits only)
+#   roboto_700_32           pressure value (digits only)
+#   roboto_700_20           raintemp tile titles
+#   icon_font_16            pool battery icon
+# -----------------------------------------------------------------------------
+
+font:
+  - file: "fonts/Nunito-SemiBold.ttf"
+    id: nunito_36
+    size: 36
+    bpp: 4
+    glyphsets: ${glyphsets | default("GF_Latin_Kernel")}
+
+  - file: "fonts/Nunito-SemiBold.ttf"
+    id: nunito_32
+    size: 32
+    bpp: 4
+    glyphsets: ${glyphsets | default("GF_Latin_Kernel")}
+
+  - file: "fonts/Nunito-SemiBold.ttf"
+    id: nunito_28
+    size: 28
+    bpp: 4
+    glyphsets: ${glyphsets | default("GF_Latin_Kernel")}
+
+  - file: "fonts/Nunito-SemiBold.ttf"
+    id: nunito_24
+    size: 24
+    bpp: 4
+    glyphsets: ${glyphsets | default("GF_Latin_Kernel")}
+
+  # Values such as 85.3°  62.0%  0.25"  3
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 400
+      italic: false
+    id: roboto_400_48
+    size: 48
+    bpp: 4
+    glyphs: '0123456789.-°%" '
+    ignore_missing_glyphs: true
+
+  # Pressure value such as 29.921 (unit-less; the trend arrow sits beside it)
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 700
+      italic: false
+    id: roboto_700_32
+    size: 32
+    bpp: 4
+    glyphs: '0123456789.-'
+    ignore_missing_glyphs: true
+
+  - file:
+      type: gfonts
+      family: "Roboto"
+      weight: 700
+      italic: false
+    id: roboto_700_20
+    size: 20
+    bpp: 4
+    glyphsets: [GF_Latin_Kernel]
+    ignore_missing_glyphs: true
+
+  # Battery icons only (same file, so no 'extras' needed)
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: icon_font_16
+    size: 16
+    bpp: 4
+    glyphs:
+      - "\U000F0081"  # battery-80
+      - "\U000F007E"  # battery-50
+      - "\U000F007C"  # battery-30
+      - "\U000F10CD"  # battery-alert-variant
